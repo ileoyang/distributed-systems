@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 )
 
-const timeout = 10  // wait timeout for tasks
+const (
+	timeout = 10  // wait timeout for a task
+	tempDir = "temp"  // directory of temporary files
+)
 
 type Master struct {
 	mu sync.Mutex
@@ -55,18 +59,22 @@ func (m *Master) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) error 
 func (m *Master) server() {
 	rpc.Register(m)
 	rpc.HandleHTTP()
-	sockName := "/var/tmp/824-mr-" + strconv.Itoa(os.Getuid())
-	os.Remove(sockName)
-	l, e := net.Listen("unix", sockName)
-	if e != nil {
-		log.Fatal("listen error:", e)
+	unixAddress := unixAddress()
+	os.Remove(unixAddress)
+	listener, err := net.Listen("unix", unixAddress)
+	if err != nil {
+		log.Fatalf("listen error: %v", err)
 	}
-	go http.Serve(l, nil)
+	go http.Serve(listener, nil)
 }
 
 // Done returns if the entire job has finished.
 func (m *Master) Done() bool {
 	return m.tasks.Len() == 0 && len(m.assignment) == 0
+}
+
+func unixAddress() string {
+	return "/var/tmp/824-mr-" + strconv.Itoa(os.Getuid())
 }
 
 func NewMaster(files []string, nReduce int) *Master {
@@ -83,5 +91,21 @@ func NewMaster(files []string, nReduce int) *Master {
 		m.tasks.PushBack(Task{i, Reduce, ""})
 	}
 	m.server()
+	// reset task result files.
+	filePaths, err := filepath.Glob("mr-out*")
+	if err != nil {
+		log.Fatalf("cannot glob: %v", err)
+	}
+	for _, filePath := range filePaths {
+		if err := os.Remove(filePath); err != nil {
+			log.Fatalf("cannot remove: %v", err)
+		}
+	}
+	if err := os.RemoveAll(tempDir); err != nil {
+		log.Fatalf("cannot remove temp directory: %v", err)
+	}
+	if err := os.Mkdir(tempDir, 0755); err != nil {
+		log.Fatalf("cannot create temp directory: %v", err)
+	}
 	return &m
 }
